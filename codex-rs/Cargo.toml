@@ -61,6 +61,8 @@ members = [
     "codex-client",
     "codex-api",
     "state",
+    "bridges/core",
+    "bridges/telegram",
     "codex-experimental-api-macros",
 ]
 resolver = "2"
@@ -118,6 +120,8 @@ codex-skills = { path = "skills" }
 codex-state = { path = "state" }
 codex-stdio-to-uds = { path = "stdio-to-uds" }
 codex-tui = { path = "tui" }
+codex-bridge-core = { path = "bridges/core" }
+codex-telegram-bridge = { path = "bridges/telegram" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }
 codex-utils-cache = { path = "utils/cache" }

@@ -16,6 +16,7 @@
 - [Apps](#apps)
 - [Auth endpoints](#auth-endpoints)
 - [Experimental API Opt-in](#experimental-api-opt-in)
+- [Telegram Bridge](#telegram-bridge)
 
 ## Protocol
 
@@ -27,6 +28,25 @@ Supported transports:
 - websocket (`--listen ws://IP:PORT`): one JSON-RPC message per websocket text frame (**experimental / unsupported**)
 
 Websocket transport is currently experimental and unsupported. Do not rely on it for production workloads.
+
+## Telegram Bridge
+
+`codex app-server` can optionally run a Telegram bridge in the same process:
+
+```bash
+codex app-server \
+  --listen ws://127.0.0.1:4222 \
+  --telegram-bridge
+```
+
+Notes:
+
+- `--telegram-bridge` requires websocket transport (`--listen ws://...`); stdio is not supported.
+- Default config path: `${CODEX_HOME:-~/.codex}/telegram/config.toml`.
+- Default state path: `${CODEX_HOME:-~/.codex}/telegram/state.json`.
+- Incoming messages are authorized by chat-id allowlist and/or sender user-id allowlist.
+- Chat groups are handled in parallel worker sessions, with in-order processing per chat group.
+- For setup, configuration, and mock testing instructions, see `docs/telegram_bridge.md`.
 
 Tracing/log output:
 
