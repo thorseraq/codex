@@ -40,6 +40,8 @@ pub(crate) struct TelegramBridgeFileConfig {
     pub(crate) token: Option<String>,
     pub(crate) chat_id: Option<i64>,
     pub(crate) allowed_chat_ids: Option<Vec<i64>>,
+    pub(crate) reply_chat_id: Option<i64>,
+    pub(crate) reply_chat_ids: Option<Vec<i64>>,
     pub(crate) allowed_user_ids: Option<Vec<i64>>,
     pub(crate) poll_timeout_seconds: Option<u32>,
     pub(crate) base_url: Option<String>,

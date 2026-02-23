@@ -73,6 +73,8 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillErrorInfo;
 use codex_protocol::protocol::TokenUsage;
+use codex_telegram_bridge::TelegramReplyRelay;
+use codex_telegram_bridge::TelegramReplyRelayArgs;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -586,6 +588,7 @@ pub(crate) struct App {
     feedback_audience: FeedbackAudience,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
+    telegram_reply_relay: Option<TelegramReplyRelay>,
 
     /// One-shot guard used while switching threads.
     ///
@@ -1398,6 +1401,13 @@ impl App {
                 ChatWidget::new_from_existing(init, forked.thread, forked.session_configured)
             }
         };
+        let telegram_reply_relay = TelegramReplyRelay::from_args(TelegramReplyRelayArgs {
+            codex_home: config.codex_home.clone(),
+            config_path: None,
+        })
+        .map_err(|err| {
+            color_eyre::eyre::eyre!("failed to initialize telegram reply relay: {err}")
+        })?;
 
         chat_widget
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
@@ -1431,6 +1441,7 @@ impl App {
             feedback: feedback.clone(),
             feedback_audience,
             pending_update_action: None,
+            telegram_reply_relay,
             suppress_shutdown_complete: false,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -2867,6 +2878,18 @@ impl App {
     /// thread shutdowns fail over to the primary thread, while user-requested
     /// app exits consume only the tracked shutdown completion and then proceed.
     async fn handle_active_thread_event(&mut self, tui: &mut tui::Tui, event: Event) -> Result<()> {
+        if let Some(thread_id) = self.active_thread_id
+            && let EventMsg::TurnComplete(turn_complete) = &event.msg
+            && let Some(last_agent_message) = turn_complete.last_agent_message.as_deref()
+            && let Some(relay) = self.telegram_reply_relay.as_ref()
+        {
+            relay.send_turn_reply(
+                &thread_id.to_string(),
+                &turn_complete.turn_id,
+                last_agent_message,
+            );
+        }
+
         // Capture this before any potential thread switch: we only want to clear
         // the exit marker when the currently active thread acknowledges shutdown.
         let pending_shutdown_exit_completed = matches!(&event.msg, EventMsg::ShutdownComplete)
@@ -3726,6 +3749,7 @@ mod tests {
             feedback: codex_feedback::CodexFeedback::new(),
             feedback_audience: FeedbackAudience::External,
             pending_update_action: None,
+            telegram_reply_relay: None,
             suppress_shutdown_complete: false,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -3785,6 +3809,7 @@ mod tests {
                 feedback: codex_feedback::CodexFeedback::new(),
                 feedback_audience: FeedbackAudience::External,
                 pending_update_action: None,
+                telegram_reply_relay: None,
                 suppress_shutdown_complete: false,
                 pending_shutdown_exit_thread_id: None,
                 windows_sandbox: WindowsSandboxState::default(),

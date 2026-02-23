@@ -42,6 +42,7 @@ codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-state = { workspace = true }
+codex-telegram-bridge = { workspace = true }
 codex-utils-approval-presets = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-cli = { workspace = true }

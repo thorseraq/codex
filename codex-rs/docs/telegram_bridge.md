@@ -72,6 +72,29 @@ Environment overrides:
 - `CODEX_TELEGRAM_AUTO_APPROVE_COMMANDS` (`true/false`)
 - `CODEX_TELEGRAM_AUTO_APPROVE_FILE_CHANGES` (`true/false`)
 
+## Reply Relay for Every Interface
+
+You can relay completed assistant replies to Telegram from any Codex interface (`codex`, `codex exec`, and `codex app-server`) by enabling:
+
+- `CODEX_TELEGRAM_REPLY_RELAY=true`
+
+Relay-specific overrides:
+
+- `CODEX_TELEGRAM_REPLY_BOT_TOKEN` (optional; falls back to `CODEX_TELEGRAM_BOT_TOKEN`)
+- `CODEX_TELEGRAM_REPLY_CHAT_IDS` (optional; falls back to `CODEX_TELEGRAM_CHAT_IDS` / `CODEX_TELEGRAM_CHAT_ID` / config `reply_chat_ids` + `reply_chat_id` / config `chat_id` + `allowed_chat_ids`)
+- `CODEX_TELEGRAM_REPLY_BASE_URL` (optional; falls back to `CODEX_TELEGRAM_BASE_URL`)
+
+Relay destinations can also be configured in `${CODEX_HOME:-~/.codex}/telegram/config.toml`:
+
+- `reply_chat_ids = [ ... ]`
+- `reply_chat_id = ...`
+
+Notes:
+
+- Relay uses the same default config path: `${CODEX_HOME:-~/.codex}/telegram/config.toml`.
+- Relay forwards final turn messages (`TurnComplete.last_agent_message`), not intermediate deltas.
+- If you run `codex app-server --telegram-bridge` with relay enabled, turns created by Telegram bridge clients are automatically excluded from relay to avoid duplicate replies.
+
 ## Create a Telegram Bot
 
 1. In Telegram, open `@BotFather`.

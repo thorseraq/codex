@@ -46,6 +46,8 @@ Notes:
 - Default state path: `${CODEX_HOME:-~/.codex}/telegram/state.json`.
 - Incoming messages are authorized by chat-id allowlist and/or sender user-id allowlist.
 - Chat groups are handled in parallel worker sessions, with in-order processing per chat group.
+- Set `CODEX_TELEGRAM_REPLY_RELAY=true` to relay completed assistant replies from any app-server client to Telegram using the same Telegram config.
+- With `--telegram-bridge` and relay both enabled, turns started by the Telegram bridge client are automatically excluded from relay to avoid duplicate Telegram replies.
 - For setup, configuration, and mock testing instructions, see `docs/telegram_bridge.md`.
 
 Tracing/log output:

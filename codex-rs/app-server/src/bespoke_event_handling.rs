@@ -97,11 +97,13 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::TokenCountEvent;
+use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::request_user_input::RequestUserInputAnswer as CoreRequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse as CoreRequestUserInputResponse;
 use codex_protocol::skill_approval::SkillApprovalResponse as CoreSkillApprovalResponse;
 use codex_shell_command::parse_command::shlex_join;
+use codex_telegram_bridge::TelegramReplyRelay;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::Path;
@@ -137,6 +139,7 @@ pub(crate) async fn apply_bespoke_event_handling(
     api_version: ApiVersion,
     fallback_model_provider: String,
     codex_home: &Path,
+    telegram_reply_relay: Option<&TelegramReplyRelay>,
 ) {
     let Event {
         id: event_turn_id,
@@ -148,8 +151,20 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .note_turn_started(&conversation_id.to_string())
                 .await;
         }
-        EventMsg::TurnComplete(_ev) => {
-            let turn_failed = thread_state.lock().await.turn_summary.last_error.is_some();
+        EventMsg::TurnComplete(ev) => {
+            let (skip_reply_relay, turn_failed) = {
+                let mut state = thread_state.lock().await;
+                (
+                    state.take_reply_relay_suppression_for_turn(&ev.turn_id),
+                    state.turn_summary.last_error.is_some(),
+                )
+            };
+            relay_turn_complete_message(
+                telegram_reply_relay,
+                conversation_id,
+                &ev,
+                skip_reply_relay,
+            );
             thread_watch_manager
                 .note_turn_completed(&conversation_id.to_string(), turn_failed)
                 .await;
@@ -1344,6 +1359,26 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
 
         _ => {}
+    }
+}
+
+fn relay_turn_complete_message(
+    telegram_reply_relay: Option<&TelegramReplyRelay>,
+    conversation_id: ThreadId,
+    turn_complete: &TurnCompleteEvent,
+    skip_reply_relay: bool,
+) {
+    if skip_reply_relay {
+        return;
+    }
+    if let Some(relay) = telegram_reply_relay
+        && let Some(last_agent_message) = turn_complete.last_agent_message.as_deref()
+    {
+        relay.send_turn_reply(
+            &conversation_id.to_string(),
+            &turn_complete.turn_id,
+            last_agent_message,
+        );
     }
 }
 

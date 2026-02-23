@@ -44,6 +44,8 @@ use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_telegram_bridge::TelegramReplyRelay;
+use codex_telegram_bridge::TelegramReplyRelayArgs;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
@@ -377,6 +379,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let default_sandbox_policy = config.permissions.sandbox_policy.get();
     let default_effort = config.model_reasoning_effort;
     let default_summary = config.model_reasoning_summary;
+    let telegram_reply_relay = TelegramReplyRelay::from_args(TelegramReplyRelayArgs {
+        codex_home: config.codex_home.clone(),
+        config_path: None,
+    })?;
 
     // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
     // since the user is explicitly running in an externally sandboxed environment.
@@ -587,6 +593,17 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         }
         if matches!(event.msg, EventMsg::Error(_)) {
             error_seen = true;
+        }
+        if thread_id == primary_thread_id
+            && let EventMsg::TurnComplete(turn_complete) = &event.msg
+            && let Some(last_agent_message) = turn_complete.last_agent_message.as_deref()
+            && let Some(relay) = telegram_reply_relay.as_ref()
+        {
+            relay.send_turn_reply(
+                &thread_id.to_string(),
+                &turn_complete.turn_id,
+                last_agent_message,
+            );
         }
         if shutdown_requested
             && !matches!(&event.msg, EventMsg::ShutdownComplete | EventMsg::Error(_))
