@@ -46,6 +46,8 @@ pub(crate) struct ThreadState {
     pub(crate) pending_rollbacks: Option<ConnectionRequestId>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) suppressed_reply_relay_turn_ids: HashSet<String>,
+    pub(crate) reply_relay_last_user_prompt: Option<String>,
+    pub(crate) reply_relay_cwd: Option<PathBuf>,
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
     pub(crate) experimental_raw_events: bool,
     pub(crate) listener_generation: u64,
@@ -85,6 +87,8 @@ impl ThreadState {
         self.listener_command_tx = None;
         self.current_turn_history.reset();
         self.suppressed_reply_relay_turn_ids.clear();
+        self.reply_relay_last_user_prompt = None;
+        self.reply_relay_cwd = None;
         self.listener_thread = None;
     }
 
@@ -127,6 +131,26 @@ impl ThreadState {
 
     pub(crate) fn take_reply_relay_suppression_for_turn(&mut self, turn_id: &str) -> bool {
         self.suppressed_reply_relay_turn_ids.remove(turn_id)
+    }
+
+    pub(crate) fn set_reply_relay_prompt(&mut self, prompt: String) {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        self.reply_relay_last_user_prompt = Some(prompt);
+    }
+
+    pub(crate) fn take_reply_relay_prompt(&mut self) -> Option<String> {
+        self.reply_relay_last_user_prompt.take()
+    }
+
+    pub(crate) fn set_reply_relay_cwd(&mut self, cwd: PathBuf) {
+        self.reply_relay_cwd = Some(cwd);
+    }
+
+    pub(crate) fn reply_relay_cwd(&self) -> Option<&PathBuf> {
+        self.reply_relay_cwd.as_ref()
     }
 }
 

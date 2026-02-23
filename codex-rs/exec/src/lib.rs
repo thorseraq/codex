@@ -46,6 +46,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use codex_telegram_bridge::TelegramReplyRelay;
 use codex_telegram_bridge::TelegramReplyRelayArgs;
+use codex_telegram_bridge::TelegramReplyRelayMessage;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
@@ -487,6 +488,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             )
         }
     };
+    let relay_prompt_summary = prompt_summary.clone();
 
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
@@ -555,7 +557,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             let task_id = thread
                 .submit(Op::UserTurn {
                     items,
-                    cwd: default_cwd,
+                    cwd: default_cwd.clone(),
                     approval_policy: default_approval_policy,
                     sandbox_policy: default_sandbox_policy.clone(),
                     model: default_model,
@@ -599,11 +601,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             && let Some(last_agent_message) = turn_complete.last_agent_message.as_deref()
             && let Some(relay) = telegram_reply_relay.as_ref()
         {
-            relay.send_turn_reply(
-                &thread_id.to_string(),
-                &turn_complete.turn_id,
-                last_agent_message,
-            );
+            relay.send_turn_reply_with_context(TelegramReplyRelayMessage {
+                thread_id: &thread_id.to_string(),
+                turn_id: &turn_complete.turn_id,
+                response: last_agent_message,
+                cwd: Some(default_cwd.as_path()),
+                prompt: Some(relay_prompt_summary.as_str()),
+            });
         }
         if shutdown_requested
             && !matches!(&event.msg, EventMsg::ShutdownComplete | EventMsg::Error(_))
