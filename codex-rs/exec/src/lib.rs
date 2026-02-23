@@ -73,6 +73,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use codex_telegram_bridge::TelegramReplyRelay;
 use codex_telegram_bridge::TelegramReplyRelayArgs;
+use codex_telegram_bridge::TelegramReplyRelayMessage;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
@@ -664,6 +665,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             )
         }
     };
+    let relay_prompt_summary = prompt_summary.clone();
 
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
@@ -826,11 +828,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         if let Some(last_agent_message) = payload.last_agent_message.as_deref()
                             && let Some(relay) = telegram_reply_relay.as_ref()
                         {
-                            relay.send_turn_reply(
-                                &primary_thread_id_for_requests,
-                                &payload.turn_id,
-                                last_agent_message,
-                            );
+                            relay.send_turn_reply_with_context(TelegramReplyRelayMessage {
+                                thread_id: &primary_thread_id_for_requests,
+                                turn_id: &payload.turn_id,
+                                response: last_agent_message,
+                                cwd: Some(default_cwd.as_path()),
+                                prompt: Some(relay_prompt_summary.as_str()),
+                            });
                         }
                     }
                     EventMsg::TurnAborted(payload) => {

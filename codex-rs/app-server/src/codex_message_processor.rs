@@ -365,6 +365,23 @@ fn convert_remote_product_surface(product_surface: ApiProductSurface) -> RemoteS
     }
 }
 
+fn relay_prompt_from_input_items(items: &[V2UserInput]) -> Option<String> {
+    let prompt = items
+        .iter()
+        .filter_map(|item| match item {
+            V2UserInput::Text { text, .. } => Some(text.trim()),
+            _ => None,
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if prompt.is_empty() {
+        None
+    } else {
+        Some(prompt)
+    }
+}
+
 impl Drop for ActiveLogin {
     fn drop(&mut self) {
         self.shutdown_handle.shutdown();
@@ -5796,6 +5813,12 @@ impl CodexMessageProcessor {
         let collaboration_mode = params.collaboration_mode.map(|mode| {
             self.normalize_turn_start_collaboration_mode(mode, collaboration_modes_config)
         });
+        let relay_prompt = relay_prompt_from_input_items(&params.input);
+        let relay_cwd = if let Some(cwd) = params.cwd.clone() {
+            cwd
+        } else {
+            thread.config_snapshot().await.cwd
+        };
 
         // Map v2 input items to core input items.
         let mapped_items: Vec<CoreInputItem> = params
@@ -5842,9 +5865,13 @@ impl CodexMessageProcessor {
 
         match turn_id {
             Ok(turn_id) => {
+                let thread_state = self.thread_state_manager.thread_state(thread_id);
+                let mut thread_state = thread_state.lock().await;
+                thread_state.set_reply_relay_cwd(relay_cwd);
+                if let Some(prompt) = relay_prompt {
+                    thread_state.set_reply_relay_prompt(prompt);
+                }
                 if matches!(request_source, RequestSource::TelegramBridge) {
-                    let thread_state = self.thread_state_manager.thread_state(thread_id);
-                    let mut thread_state = thread_state.lock().await;
                     thread_state.suppress_reply_relay_for_turn(turn_id.clone());
                 }
 

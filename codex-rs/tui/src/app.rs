@@ -81,6 +81,7 @@ use codex_protocol::protocol::SkillErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_telegram_bridge::TelegramReplyRelay;
 use codex_telegram_bridge::TelegramReplyRelayArgs;
+use codex_telegram_bridge::TelegramReplyRelayMessage;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -682,6 +683,7 @@ pub(crate) struct App {
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
     telegram_reply_relay: Option<TelegramReplyRelay>,
+    relay_last_user_prompt_by_thread: HashMap<ThreadId, String>,
 
     /// One-shot guard used while switching threads.
     ///
@@ -1945,6 +1947,7 @@ impl App {
             feedback_audience,
             pending_update_action: None,
             telegram_reply_relay,
+            relay_last_user_prompt_by_thread: HashMap::new(),
             suppress_shutdown_complete: false,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -3463,16 +3466,31 @@ impl App {
     /// thread shutdowns fail over to the primary thread, while user-requested
     /// app exits consume only the tracked shutdown completion and then proceed.
     async fn handle_active_thread_event(&mut self, tui: &mut tui::Tui, event: Event) -> Result<()> {
-        if let Some(thread_id) = self.active_thread_id
-            && let EventMsg::TurnComplete(turn_complete) = &event.msg
-            && let Some(last_agent_message) = turn_complete.last_agent_message.as_deref()
-            && let Some(relay) = self.telegram_reply_relay.as_ref()
-        {
-            relay.send_turn_reply(
-                &thread_id.to_string(),
-                &turn_complete.turn_id,
-                last_agent_message,
-            );
+        if let Some(thread_id) = self.active_thread_id {
+            match &event.msg {
+                EventMsg::UserMessage(user_message) => {
+                    let prompt = user_message.message.trim();
+                    if !prompt.is_empty() {
+                        self.relay_last_user_prompt_by_thread
+                            .insert(thread_id, prompt.to_string());
+                    }
+                }
+                EventMsg::TurnComplete(turn_complete) => {
+                    if let Some(last_agent_message) = turn_complete.last_agent_message.as_deref()
+                        && let Some(relay) = self.telegram_reply_relay.as_ref()
+                    {
+                        let prompt = self.relay_last_user_prompt_by_thread.remove(&thread_id);
+                        relay.send_turn_reply_with_context(TelegramReplyRelayMessage {
+                            thread_id: &thread_id.to_string(),
+                            turn_id: &turn_complete.turn_id,
+                            response: last_agent_message,
+                            cwd: Some(self.chat_widget.config_ref().cwd.as_path()),
+                            prompt: prompt.as_deref(),
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Capture this before any potential thread switch: we only want to clear
@@ -5619,6 +5637,7 @@ mod tests {
             feedback_audience: FeedbackAudience::External,
             pending_update_action: None,
             telegram_reply_relay: None,
+            relay_last_user_prompt_by_thread: HashMap::new(),
             suppress_shutdown_complete: false,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -5680,6 +5699,7 @@ mod tests {
                 feedback_audience: FeedbackAudience::External,
                 pending_update_action: None,
                 telegram_reply_relay: None,
+                relay_last_user_prompt_by_thread: HashMap::new(),
                 suppress_shutdown_complete: false,
                 pending_shutdown_exit_thread_id: None,
                 windows_sandbox: WindowsSandboxState::default(),

@@ -40,6 +40,15 @@ pub struct TelegramReplyRelay {
     tx: mpsc::Sender<RelayRequest>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TelegramReplyRelayMessage<'a> {
+    pub thread_id: &'a str,
+    pub turn_id: &'a str,
+    pub response: &'a str,
+    pub cwd: Option<&'a Path>,
+    pub prompt: Option<&'a str>,
+}
+
 #[derive(Debug)]
 struct RelayRequest {
     delivery_key: String,
@@ -76,17 +85,57 @@ impl TelegramReplyRelay {
     }
 
     pub fn send_turn_reply(&self, thread_id: &str, turn_id: &str, text: &str) {
-        let text = text.trim();
-        if text.is_empty() {
+        self.send_turn_reply_with_context(TelegramReplyRelayMessage {
+            thread_id,
+            turn_id,
+            response: text,
+            cwd: None,
+            prompt: None,
+        });
+    }
+
+    pub fn send_turn_reply_with_context(&self, message: TelegramReplyRelayMessage<'_>) {
+        let response = message.response.trim();
+        if response.is_empty() {
             return;
         }
 
-        let delivery_key = format!("{thread_id}:{turn_id}");
+        let delivery_key = format!("{}:{}", message.thread_id, message.turn_id);
+        let formatted_text = format_relay_message(message);
         let _ignored = self.tx.send(RelayRequest {
             delivery_key,
-            text: text.to_string(),
+            text: formatted_text,
         });
     }
+}
+
+fn format_relay_message(message: TelegramReplyRelayMessage<'_>) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Thread: {}", message.thread_id));
+    lines.push(format!("Turn: {}", message.turn_id));
+    lines.push(format!(
+        "CWD: {}",
+        message
+            .cwd
+            .map(|cwd| cwd.display().to_string())
+            .unwrap_or_else(|| "(unknown)".to_string())
+    ));
+    lines.push(String::new());
+
+    if let Some(prompt) = message
+        .prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+    {
+        lines.push("Prompt:".to_string());
+        lines.push(prompt.to_string());
+    } else {
+        lines.push("Prompt: (unavailable)".to_string());
+    }
+    lines.push(String::new());
+    lines.push("Reply:".to_string());
+    lines.push(message.response.trim().to_string());
+    lines.join("\n")
 }
 
 fn reply_relay_enabled(env: &HashMap<String, String>) -> Result<bool> {
@@ -281,6 +330,8 @@ fn split_telegram_message(text: &str) -> Vec<String> {
 mod tests {
     use super::REPLY_RELAY_ENABLED_ENV;
     use super::RelayRuntimeConfig;
+    use super::TelegramReplyRelayMessage;
+    use super::format_relay_message;
     use super::reply_relay_enabled;
     use super::resolve_runtime_config;
     use crate::types::TelegramBridgeFileConfig;
@@ -379,6 +430,22 @@ mod tests {
                 api_base_url: "https://api.telegram.org".to_string(),
                 chat_ids: vec![100, 200, 300],
             }
+        );
+    }
+
+    #[test]
+    fn format_relay_message_includes_metadata_and_sections() {
+        let text = format_relay_message(TelegramReplyRelayMessage {
+            thread_id: "thread-1",
+            turn_id: "turn-1",
+            response: "final answer",
+            cwd: Some(Path::new("/tmp/project")),
+            prompt: Some("what changed?"),
+        });
+
+        assert_eq!(
+            text,
+            "Thread: thread-1\nTurn: turn-1\nCWD: /tmp/project\n\nPrompt:\nwhat changed?\n\nReply:\nfinal answer"
         );
     }
 }
