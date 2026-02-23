@@ -54,6 +54,7 @@ pub(crate) struct ThreadState {
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) pending_rollbacks: Option<ConnectionRequestId>,
     pub(crate) turn_summary: TurnSummary,
+    pub(crate) suppressed_reply_relay_turn_ids: HashSet<String>,
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
     pub(crate) experimental_raw_events: bool,
     pub(crate) listener_generation: u64,
@@ -91,6 +92,7 @@ impl ThreadState {
         }
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.suppressed_reply_relay_turn_ids.clear();
         self.listener_thread = None;
     }
 
@@ -113,6 +115,14 @@ impl ThreadState {
         if !self.current_turn_history.has_active_turn() {
             self.current_turn_history.reset();
         }
+    }
+
+    pub(crate) fn suppress_reply_relay_for_turn(&mut self, turn_id: String) {
+        self.suppressed_reply_relay_turn_ids.insert(turn_id);
+    }
+
+    pub(crate) fn take_reply_relay_suppression_for_turn(&mut self, turn_id: &str) -> bool {
+        self.suppressed_reply_relay_turn_ids.remove(turn_id)
     }
 }
 
@@ -336,5 +346,20 @@ impl ThreadStateManager {
                 "retaining thread listener after connection disconnect left zero subscribers"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThreadState;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn suppressed_reply_relay_turn_ids_are_one_shot() {
+        let mut state = ThreadState::default();
+        state.suppress_reply_relay_for_turn("turn-1".to_string());
+
+        assert_eq!(state.take_reply_relay_suppression_for_turn("turn-1"), true);
+        assert_eq!(state.take_reply_relay_suppression_for_turn("turn-1"), false);
     }
 }

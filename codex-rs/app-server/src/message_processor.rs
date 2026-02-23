@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 use crate::codex_message_processor::CodexMessageProcessor;
 use crate::codex_message_processor::CodexMessageProcessorArgs;
+use crate::codex_message_processor::RequestSource;
 use crate::config_api::ConfigApi;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::external_agent_config_api::ExternalAgentConfigApi;
@@ -56,6 +57,7 @@ use codex_feedback::CodexFeedback;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_state::log_db::LogDbLayer;
+use codex_telegram_bridge::TelegramReplyRelay;
 use futures::FutureExt;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -65,6 +67,17 @@ use toml::Value as TomlValue;
 use tracing::Instrument;
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+const TELEGRAM_BRIDGE_CLIENT_NAME: &str = "codex_bridge";
+const TELEGRAM_BRIDGE_CLIENT_NAME_ALT: &str = "codex_telegram_bridge";
+
+fn request_source_for_client_name(client_name: &str) -> RequestSource {
+    match client_name.trim().to_ascii_lowercase().as_str() {
+        TELEGRAM_BRIDGE_CLIENT_NAME | TELEGRAM_BRIDGE_CLIENT_NAME_ALT => {
+            RequestSource::TelegramBridge
+        }
+        _ => RequestSource::Unknown,
+    }
+}
 
 #[derive(Clone)]
 struct ExternalAuthRefreshBridge {
@@ -146,6 +159,7 @@ pub(crate) struct ConnectionSessionState {
     pub(crate) opted_out_notification_methods: HashSet<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) client_version: Option<String>,
+    pub(crate) request_source: RequestSource,
 }
 
 pub(crate) struct MessageProcessorArgs {
@@ -157,6 +171,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) cloud_requirements: CloudRequirementsLoader,
     pub(crate) feedback: CodexFeedback,
     pub(crate) log_db: Option<LogDbLayer>,
+    pub(crate) telegram_reply_relay: Option<TelegramReplyRelay>,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
     pub(crate) enable_codex_api_key_env: bool,
@@ -175,6 +190,7 @@ impl MessageProcessor {
             cloud_requirements,
             feedback,
             log_db,
+            telegram_reply_relay,
             config_warnings,
             session_source,
             enable_codex_api_key_env,
@@ -213,6 +229,7 @@ impl MessageProcessor {
             cloud_requirements: cloud_requirements.clone(),
             feedback,
             log_db,
+            telegram_reply_relay,
         });
         let config_api = ConfigApi::new(
             config.codex_home.clone(),
@@ -463,6 +480,7 @@ impl MessageProcessor {
                 } = params.client_info;
                 session.app_server_client_name = Some(name.clone());
                 session.client_version = Some(version.clone());
+                session.request_source = request_source_for_client_name(&name);
                 if let Err(error) = set_default_originator(name.clone()) {
                     match error {
                         SetOriginatorError::InvalidHeaderValue => {
@@ -596,7 +614,12 @@ impl MessageProcessor {
                 // inline the full `CodexMessageProcessor::process_request` future, which
                 // can otherwise push worker-thread stack usage over the edge.
                 self.codex_message_processor
-                    .process_request(connection_id, other, session.app_server_client_name.clone())
+                    .process_request(
+                        connection_id,
+                        other,
+                        session.app_server_client_name.clone(),
+                        session.request_source,
+                    )
                     .boxed()
                     .await;
             }

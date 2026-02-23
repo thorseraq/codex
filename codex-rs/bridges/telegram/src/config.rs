@@ -168,7 +168,7 @@ fn resolve_allowed_user_ids(file_config: &TelegramBridgeFileConfig) -> Result<Ha
         .collect())
 }
 
-fn parse_chat_id_csv(raw: &str) -> Result<HashSet<i64>> {
+pub(crate) fn parse_chat_id_csv(raw: &str) -> Result<HashSet<i64>> {
     let mut values = HashSet::new();
     for entry in raw
         .split(',')
@@ -183,7 +183,7 @@ fn parse_chat_id_csv(raw: &str) -> Result<HashSet<i64>> {
     Ok(values)
 }
 
-fn load_file_config(path: &Path) -> Result<TelegramBridgeFileConfig> {
+pub(crate) fn load_file_config(path: &Path) -> Result<TelegramBridgeFileConfig> {
     match fs::read_to_string(path) {
         Ok(contents) => toml::from_str(&contents)
             .with_context(|| format!("parse telegram config {}", path.display())),

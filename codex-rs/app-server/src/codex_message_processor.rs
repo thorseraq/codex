@@ -275,6 +275,7 @@ use codex_rmcp_client::perform_oauth_login_return_url;
 use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 use codex_state::log_db::LogDbLayer;
+use codex_telegram_bridge::TelegramReplyRelay;
 use codex_utils_json_to_toml::json_to_toml;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use std::collections::HashMap;
@@ -388,6 +389,7 @@ pub(crate) struct CodexMessageProcessor {
     fuzzy_search_sessions: Arc<Mutex<HashMap<String, FuzzyFileSearchSession>>>,
     feedback: CodexFeedback,
     log_db: Option<LogDbLayer>,
+    telegram_reply_relay: Option<TelegramReplyRelay>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -406,12 +408,20 @@ struct ListenerTaskContext {
     thread_watch_manager: ThreadWatchManager,
     fallback_model_provider: String,
     codex_home: PathBuf,
+    telegram_reply_relay: Option<TelegramReplyRelay>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EnsureConversationListenerResult {
     Attached,
     ConnectionClosed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RequestSource {
+    #[default]
+    Unknown,
+    TelegramBridge,
 }
 
 pub(crate) struct CodexMessageProcessorArgs {
@@ -424,6 +434,7 @@ pub(crate) struct CodexMessageProcessorArgs {
     pub(crate) cloud_requirements: Arc<RwLock<CloudRequirementsLoader>>,
     pub(crate) feedback: CodexFeedback,
     pub(crate) log_db: Option<LogDbLayer>,
+    pub(crate) telegram_reply_relay: Option<TelegramReplyRelay>,
 }
 
 impl CodexMessageProcessor {
@@ -484,6 +495,7 @@ impl CodexMessageProcessor {
             cloud_requirements,
             feedback,
             log_db,
+            telegram_reply_relay,
         } = args;
         Self {
             auth_manager,
@@ -502,6 +514,7 @@ impl CodexMessageProcessor {
             fuzzy_search_sessions: Arc::new(Mutex::new(HashMap::new())),
             feedback,
             log_db,
+            telegram_reply_relay,
         }
     }
 
@@ -620,6 +633,7 @@ impl CodexMessageProcessor {
         connection_id: ConnectionId,
         request: ClientRequest,
         app_server_client_name: Option<String>,
+        request_source: RequestSource,
     ) {
         let to_connection_request_id = |request_id| ConnectionRequestId {
             connection_id,
@@ -726,17 +740,18 @@ impl CodexMessageProcessor {
                 self.plugin_install(to_connection_request_id(request_id), params)
                     .await;
             }
-            ClientRequest::PluginUninstall { request_id, params } => {
-                self.plugin_uninstall(to_connection_request_id(request_id), params)
-                    .await;
-            }
             ClientRequest::TurnStart { request_id, params } => {
                 self.turn_start(
                     to_connection_request_id(request_id),
                     params,
                     app_server_client_name.clone(),
+                    request_source,
                 )
-                .await;
+                    .await;
+            }
+            ClientRequest::PluginUninstall { request_id, params } => {
+                self.plugin_uninstall(to_connection_request_id(request_id), params)
+                    .await;
             }
             ClientRequest::TurnSteer { request_id, params } => {
                 self.turn_steer(to_connection_request_id(request_id), params)
@@ -1846,6 +1861,7 @@ impl CodexMessageProcessor {
             thread_watch_manager: self.thread_watch_manager.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.clone(),
+            telegram_reply_relay: self.telegram_reply_relay.clone(),
         };
 
         tokio::spawn(async move {
@@ -5750,16 +5766,17 @@ impl CodexMessageProcessor {
     }
 
     async fn turn_start(
-        &self,
+        &mut self,
         request_id: ConnectionRequestId,
         params: TurnStartParams,
         app_server_client_name: Option<String>,
+        request_source: RequestSource,
     ) {
         if let Err(error) = Self::validate_v2_input_limit(&params.input) {
             self.outgoing.send_error(request_id, error).await;
             return;
         }
-        let (_, thread) = match self.load_thread(&params.thread_id).await {
+        let (thread_id, thread) = match self.load_thread(&params.thread_id).await {
             Ok(v) => v,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
@@ -5825,6 +5842,12 @@ impl CodexMessageProcessor {
 
         match turn_id {
             Ok(turn_id) => {
+                if matches!(request_source, RequestSource::TelegramBridge) {
+                    let thread_state = self.thread_state_manager.thread_state(thread_id);
+                    let mut thread_state = thread_state.lock().await;
+                    thread_state.suppress_reply_relay_for_turn(turn_id.clone());
+                }
+
                 let turn = Turn {
                     id: turn_id.clone(),
                     items: vec![],
@@ -6369,6 +6392,7 @@ impl CodexMessageProcessor {
                 thread_watch_manager: self.thread_watch_manager.clone(),
                 fallback_model_provider: self.config.model_provider_id.clone(),
                 codex_home: self.config.codex_home.clone(),
+                telegram_reply_relay: self.telegram_reply_relay.clone(),
             },
             conversation_id,
             connection_id,
@@ -6456,6 +6480,7 @@ impl CodexMessageProcessor {
                 thread_watch_manager: self.thread_watch_manager.clone(),
                 fallback_model_provider: self.config.model_provider_id.clone(),
                 codex_home: self.config.codex_home.clone(),
+                telegram_reply_relay: self.telegram_reply_relay.clone(),
             },
             conversation_id,
             conversation,
@@ -6487,6 +6512,7 @@ impl CodexMessageProcessor {
             thread_watch_manager,
             fallback_model_provider,
             codex_home,
+            telegram_reply_relay,
         } = listener_task_context;
         let outgoing_for_task = Arc::clone(&outgoing);
         tokio::spawn(async move {
@@ -6582,6 +6608,7 @@ impl CodexMessageProcessor {
                             api_version,
                             fallback_model_provider.clone(),
                             codex_home.as_path(),
+                            telegram_reply_relay.as_ref(),
                         )
                         .await;
                     }

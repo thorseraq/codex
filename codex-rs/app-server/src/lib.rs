@@ -41,6 +41,8 @@ use codex_core::config_loader::TextRange as CoreTextRange;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_state::log_db;
+use codex_telegram_bridge::TelegramReplyRelay;
+use codex_telegram_bridge::TelegramReplyRelayArgs;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -469,6 +471,17 @@ pub async fn run_main_with_transport(
         config_warnings.push(warning);
     }
 
+    let telegram_reply_relay = TelegramReplyRelay::from_args(TelegramReplyRelayArgs {
+        codex_home: config.codex_home.clone(),
+        config_path: None,
+    })
+    .map_err(|err| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("failed to initialize telegram reply relay: {err}"),
+        )
+    })?;
+
     let feedback = CodexFeedback::new();
 
     let otel = codex_core::otel_init::build_provider(
@@ -601,6 +614,7 @@ pub async fn run_main_with_transport(
             cloud_requirements: cloud_requirements.clone(),
             feedback: feedback.clone(),
             log_db,
+            telegram_reply_relay,
             config_warnings,
             session_source: SessionSource::VSCode,
             enable_codex_api_key_env: false,
