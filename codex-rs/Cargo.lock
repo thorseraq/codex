@@ -1611,6 +1611,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-bridge-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-app-server-protocol",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tungstenite",
+ "url",
+]
+
+[[package]]
 name = "codex-chatgpt"
 version = "0.0.0"
 dependencies = [
@@ -1654,6 +1668,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-state",
  "codex-stdio-to-uds",
+ "codex-telegram-bridge",
  "codex-tui",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
@@ -2447,6 +2462,21 @@ dependencies = [
  "pretty_assertions",
  "tempfile",
  "uds_windows",
+]
+
+[[package]]
+name = "codex-telegram-bridge"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-app-server-protocol",
+ "codex-bridge-core",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

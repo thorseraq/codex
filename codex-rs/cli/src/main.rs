@@ -24,6 +24,7 @@ use codex_execpolicy::ExecPolicyCheckCommand;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_state::StateRuntime;
 use codex_state::state_db_path;
+use codex_telegram_bridge::TelegramBridgeArgs;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
@@ -339,6 +340,57 @@ struct AppServerCommand {
     /// See https://developers.openai.com/codex/config-advanced/#metrics for more details.
     #[arg(long = "analytics-default-enabled")]
     analytics_default_enabled: bool,
+
+    /// Start the Telegram bridge in the same process.
+    ///
+    /// Requires websocket transport (`--listen ws://IP:PORT`).
+    #[arg(long = "telegram-bridge", default_value_t = false)]
+    telegram_bridge: bool,
+
+    /// Path to Telegram bridge config TOML.
+    ///
+    /// Defaults to `${CODEX_HOME:-~/.codex}/telegram/config.toml`.
+    #[arg(
+        long = "telegram-config",
+        value_name = "FILE",
+        requires = "telegram_bridge"
+    )]
+    telegram_config: Option<PathBuf>,
+
+    /// Path to Telegram bridge state JSON.
+    ///
+    /// Defaults to `${CODEX_HOME:-~/.codex}/telegram/state.json`.
+    #[arg(
+        long = "telegram-state",
+        value_name = "FILE",
+        requires = "telegram_bridge"
+    )]
+    telegram_state: Option<PathBuf>,
+
+    /// Run bridge in mock mode (no Telegram network calls); exits after mock messages are processed.
+    #[arg(
+        long = "telegram-bridge-mock",
+        default_value_t = false,
+        requires = "telegram_bridge"
+    )]
+    telegram_bridge_mock: bool,
+
+    /// Message to feed into mock Telegram mode. Repeat to send multiple messages.
+    #[arg(
+        long = "telegram-bridge-mock-message",
+        value_name = "TEXT",
+        action = clap::ArgAction::Append,
+        requires = "telegram_bridge_mock"
+    )]
+    telegram_bridge_mock_messages: Vec<String>,
+
+    /// Chat id used for mock messages when not set in config.
+    #[arg(
+        long = "telegram-bridge-mock-chat-id",
+        value_name = "CHAT_ID",
+        requires = "telegram_bridge_mock"
+    )]
+    telegram_bridge_mock_chat_id: Option<i64>,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -483,6 +535,105 @@ async fn run_debug_app_server_command(cmd: DebugAppServerCommand) -> anyhow::Res
     }
 }
 
+async fn run_app_server_command(
+    app_server_cli: AppServerCommand,
+    codex_linux_sandbox_exe: Option<PathBuf>,
+    cli_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let AppServerCommand {
+        subcommand,
+        listen,
+        analytics_default_enabled,
+        telegram_bridge,
+        telegram_config,
+        telegram_state,
+        telegram_bridge_mock,
+        telegram_bridge_mock_messages,
+        telegram_bridge_mock_chat_id,
+    } = app_server_cli;
+
+    match subcommand {
+        None => {
+            if !telegram_bridge {
+                codex_app_server::run_main_with_transport(
+                    codex_linux_sandbox_exe,
+                    cli_config_overrides,
+                    codex_core::config_loader::LoaderOverrides::default(),
+                    analytics_default_enabled,
+                    listen,
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let bind_address = match listen {
+                codex_app_server::AppServerTransport::WebSocket { bind_address } => bind_address,
+                codex_app_server::AppServerTransport::Stdio => {
+                    anyhow::bail!(
+                        "--telegram-bridge requires websocket transport; use `--listen ws://127.0.0.1:PORT`"
+                    );
+                }
+            };
+            let app_server_url = format!("ws://{bind_address}");
+
+            let codex_home = find_codex_home()?;
+            let config_path =
+                telegram_config.unwrap_or_else(|| codex_home.join("telegram").join("config.toml"));
+            let bridge_args = TelegramBridgeArgs {
+                app_server_url,
+                config_path,
+                state_path: telegram_state,
+                mock_mode: telegram_bridge_mock,
+                mock_messages: telegram_bridge_mock_messages,
+                mock_chat_id: telegram_bridge_mock_chat_id,
+                connect_retry_attempts: None,
+            };
+
+            let mut app_server_task = tokio::spawn(codex_app_server::run_main_with_transport(
+                codex_linux_sandbox_exe,
+                cli_config_overrides,
+                codex_core::config_loader::LoaderOverrides::default(),
+                analytics_default_enabled,
+                codex_app_server::AppServerTransport::WebSocket { bind_address },
+            ));
+            let mut bridge_task =
+                tokio::task::spawn_blocking(move || codex_telegram_bridge::run(bridge_args));
+
+            tokio::select! {
+                app_server_result = &mut app_server_task => {
+                    bridge_task.abort();
+                    let app_server_result = app_server_result.map_err(anyhow::Error::new)?;
+                    app_server_result?;
+                }
+                bridge_result = &mut bridge_task => {
+                    app_server_task.abort();
+                    let bridge_result = bridge_result.map_err(anyhow::Error::new)?;
+                    bridge_result?
+                }
+            }
+        }
+        Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
+            let options = codex_app_server_protocol::GenerateTsOptions {
+                experimental_api: gen_cli.experimental,
+                ..Default::default()
+            };
+            codex_app_server_protocol::generate_ts_with_options(
+                &gen_cli.out_dir,
+                gen_cli.prettier.as_deref(),
+                options,
+            )?;
+        }
+        Some(AppServerSubcommand::GenerateJsonSchema(gen_cli)) => {
+            codex_app_server_protocol::generate_json_with_experimental(
+                &gen_cli.out_dir,
+                gen_cli.experimental,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Default, Parser, Clone)]
 struct FeatureToggles {
     /// Enable a feature (repeatable). Equivalent to `-c features.<name>=true`.
@@ -602,36 +753,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
             mcp_cli.run().await?;
         }
-        Some(Subcommand::AppServer(app_server_cli)) => match app_server_cli.subcommand {
-            None => {
-                let transport = app_server_cli.listen;
-                codex_app_server::run_main_with_transport(
-                    arg0_paths.clone(),
-                    root_config_overrides,
-                    codex_core::config_loader::LoaderOverrides::default(),
-                    app_server_cli.analytics_default_enabled,
-                    transport,
-                )
-                .await?;
-            }
-            Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
-                let options = codex_app_server_protocol::GenerateTsOptions {
-                    experimental_api: gen_cli.experimental,
-                    ..Default::default()
-                };
-                codex_app_server_protocol::generate_ts_with_options(
-                    &gen_cli.out_dir,
-                    gen_cli.prettier.as_deref(),
-                    options,
-                )?;
-            }
-            Some(AppServerSubcommand::GenerateJsonSchema(gen_cli)) => {
-                codex_app_server_protocol::generate_json_with_experimental(
-                    &gen_cli.out_dir,
-                    gen_cli.experimental,
-                )?;
-            }
-        },
+        Some(Subcommand::AppServer(app_server_cli)) => {
+            run_app_server_command(
+                app_server_cli,
+                arg0_paths.codex_linux_sandbox_exe.clone(),
+                root_config_overrides,
+            )
+            .await?;
+        }
         #[cfg(target_os = "macos")]
         Some(Subcommand::App(app_cli)) => {
             app_cmd::run_app(app_cli).await?;
@@ -1472,6 +1601,57 @@ mod tests {
         let parse_result =
             MultitoolCli::try_parse_from(["codex", "app-server", "--listen", "http://foo"]);
         assert!(parse_result.is_err());
+    }
+
+    #[test]
+    fn app_server_telegram_bridge_defaults_to_disabled() {
+        let app_server = app_server_from_args(["codex", "app-server"].as_ref());
+        assert!(!app_server.telegram_bridge);
+        assert!(!app_server.telegram_bridge_mock);
+        assert!(app_server.telegram_bridge_mock_messages.is_empty());
+        assert_eq!(app_server.telegram_config, None);
+        assert_eq!(app_server.telegram_state, None);
+        assert_eq!(app_server.telegram_bridge_mock_chat_id, None);
+    }
+
+    #[test]
+    fn app_server_telegram_bridge_flags_parse() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--listen",
+                "ws://127.0.0.1:4500",
+                "--telegram-bridge",
+                "--telegram-config",
+                "/tmp/telegram-config.toml",
+                "--telegram-state",
+                "/tmp/telegram-state.json",
+                "--telegram-bridge-mock",
+                "--telegram-bridge-mock-message",
+                "hello",
+                "--telegram-bridge-mock-message",
+                "status",
+                "--telegram-bridge-mock-chat-id",
+                "1234",
+            ]
+            .as_ref(),
+        );
+        assert!(app_server.telegram_bridge);
+        assert!(app_server.telegram_bridge_mock);
+        assert_eq!(
+            app_server.telegram_config,
+            Some(PathBuf::from("/tmp/telegram-config.toml"))
+        );
+        assert_eq!(
+            app_server.telegram_state,
+            Some(PathBuf::from("/tmp/telegram-state.json"))
+        );
+        assert_eq!(
+            app_server.telegram_bridge_mock_messages,
+            vec!["hello".to_string(), "status".to_string()]
+        );
+        assert_eq!(app_server.telegram_bridge_mock_chat_id, Some(1234));
     }
 
     #[test]
