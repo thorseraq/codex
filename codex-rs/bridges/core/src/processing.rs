@@ -113,16 +113,22 @@ fn is_stale_thread_error(err: &anyhow::Error) -> bool {
     })
 }
 
-pub fn process_message(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessMessageOutcome {
+    NoTurnStarted,
+    TurnStarted { thread_id: String, turn_id: String },
+}
+
+pub fn process_message_until_turn_start(
     app_server: &mut AppServerClient,
     outbound: &mut dyn OutboundSender,
     state: &mut BridgeState,
     inbound: &BridgeInboundMessage,
     config: &BridgeRuntimeConfig,
-) -> Result<()> {
+) -> Result<ProcessMessageOutcome> {
     let text = inbound.text.trim();
     if text.is_empty() {
-        return Ok(());
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
     let session_id = &inbound.session_id;
@@ -206,7 +212,7 @@ pub fn process_message(
                 resolved.model, resolved.model_source, resolved.effort, resolved.effort_source
             ),
         )?;
-        return Ok(());
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
     if let Some(args) = command_args(text, "/cwd") {
@@ -217,7 +223,7 @@ pub fn process_message(
                     "Current CWD: {cwd_label} ({cwd_source}). Use /cwd <absolute-path> to change it."
                 ),
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         if matches!(args, "reset" | "default" | "clear") {
@@ -227,23 +233,23 @@ pub fn process_message(
                 session_id,
                 "Chat CWD override cleared. Next message will use default CWD and start a new thread.",
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         let path = Path::new(args);
         if !path.is_absolute() {
             outbound.send_text(
                 session_id,
-                "CWD must be an absolute path. Example: /cwd /Users/titanma/develop/github/codex-fork",
+                "CWD must be an absolute path. Example: /cwd /path/to/workspace",
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
         if !path.is_dir() {
             outbound.send_text(
                 session_id,
                 &format!("CWD not found or not a directory: {args}"),
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         state
@@ -256,7 +262,7 @@ pub fn process_message(
                 "CWD set to {args}. Conversation reset for this chat; next message starts a new thread."
             ),
         )?;
-        return Ok(());
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
     if let Some(args) = command_args(text, "/model") {
@@ -306,7 +312,7 @@ pub fn process_message(
                     )?;
                 }
             }
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         if matches!(args, "reset" | "default" | "clear") {
@@ -315,7 +321,7 @@ pub fn process_message(
                 session_id,
                 "Model override cleared for this chat. Default model will be used.",
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         state
@@ -325,7 +331,7 @@ pub fn process_message(
             session_id,
             &format!("Model set to {args}. It will apply to the next turn."),
         )?;
-        return Ok(());
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
     if let Some(args) = command_args(text, "/effort") {
@@ -353,7 +359,7 @@ pub fn process_message(
                     resolved.effort, resolved.effort_source
                 ),
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         if matches!(args, "reset" | "default" | "clear") {
@@ -362,7 +368,7 @@ pub fn process_message(
                 session_id,
                 "Reasoning effort override cleared for this chat. Default effort will be used.",
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         }
 
         let Some(effort) = parse_reasoning_effort(args) else {
@@ -370,7 +376,7 @@ pub fn process_message(
                 session_id,
                 "Invalid effort. Use one of: none, minimal, low, medium, high, xhigh.",
             )?;
-            return Ok(());
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
         };
 
         state
@@ -380,7 +386,7 @@ pub fn process_message(
             session_id,
             &format!("Reasoning effort set to {effort}. It will apply to the next turn."),
         )?;
-        return Ok(());
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
     if command_args(text, "/reset").is_some() {
@@ -389,7 +395,7 @@ pub fn process_message(
             session_id,
             "Conversation reset. The next message will start a new thread.",
         )?;
-        return Ok(());
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
     outbound.send_text(
@@ -401,10 +407,43 @@ pub fn process_message(
 
     let thread_id = ensure_thread_for_chat(app_server, state, session_id, &thread_overrides)?;
     let turn_id = app_server.start_turn_with_overrides(&thread_id, text, &thread_overrides)?;
-    let response_text =
-        app_server.run_turn_until_complete(&thread_id, &turn_id, config.approval_policy())?;
-    outbound.send_text(session_id, &response_text)?;
+    Ok(ProcessMessageOutcome::TurnStarted { thread_id, turn_id })
+}
 
+pub fn complete_started_turn(
+    app_server: &mut AppServerClient,
+    outbound: &mut dyn OutboundSender,
+    session_id: &str,
+    thread_id: &str,
+    turn_id: &str,
+    config: &BridgeRuntimeConfig,
+) -> Result<()> {
+    let response_text =
+        app_server.run_turn_until_complete(thread_id, turn_id, config.approval_policy())?;
+    outbound.send_text(session_id, &response_text)?;
+    Ok(())
+}
+
+pub fn process_message(
+    app_server: &mut AppServerClient,
+    outbound: &mut dyn OutboundSender,
+    state: &mut BridgeState,
+    inbound: &BridgeInboundMessage,
+    config: &BridgeRuntimeConfig,
+) -> Result<()> {
+    match process_message_until_turn_start(app_server, outbound, state, inbound, config)? {
+        ProcessMessageOutcome::NoTurnStarted => {}
+        ProcessMessageOutcome::TurnStarted { thread_id, turn_id } => {
+            complete_started_turn(
+                app_server,
+                outbound,
+                &inbound.session_id,
+                &thread_id,
+                &turn_id,
+                config,
+            )?;
+        }
+    }
     Ok(())
 }
 

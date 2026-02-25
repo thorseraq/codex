@@ -42,24 +42,92 @@ codex app-server \
   --telegram-state /abs/path/telegram-state.json
 ```
 
-Example `config.toml`:
+Complete `config.toml` template:
 
 ```toml
-token = "<telegram-bot-token>"
-chat_id = 123456789
-# allowed_chat_ids = [123456789, 987654321]
-# allowed_user_ids = [111111111, 222222222]
+# Telegram bot token.
+# Required unless CODEX_TELEGRAM_BOT_TOKEN is set in the environment.
+token = "123456789:AAExampleBotToken"
+
+# Single allowlisted chat ID for inbound bridge messages.
+# Note: group/supergroup IDs are often negative (for example: -100...).
+chat_id = -1001234567890
+
+# Additional allowlisted chat IDs for inbound bridge messages.
+allowed_chat_ids = [-1001234567890, -1009876543210]
+
+# Optional allowlisted user IDs for inbound bridge messages.
+# A message is accepted when either chat ID OR user ID is allowlisted.
+allowed_user_ids = [111111111, 222222222]
+
+# Optional single destination for outbound reply relay.
+reply_chat_id = -1001234567890
+
+# Optional multiple destinations for outbound reply relay.
+reply_chat_ids = [-1001234567890, -1005555555555]
+
+# Telegram getUpdates long-poll timeout (seconds, minimum effective value is 1).
 poll_timeout_seconds = 30
+
+# Optional Telegram API base URL.
+# Use this only for custom/proxy Telegram endpoints.
+base_url = "https://api.telegram.org"
+
+# Auto-approve command approvals for bridge-initiated turns.
 auto_approve_commands = false
+
+# Auto-approve file-change approvals for bridge-initiated turns.
 auto_approve_file_changes = false
 
 [codex]
-cwd = "/absolute/project/path"
-# model = "gpt-5-codex"
-# reasoning_effort = "medium"
-# approval_policy = "never"
-# sandbox = "workspace-write"
+# Default working directory used for new turns from Telegram bridge.
+cwd = "/path/to/workspace"
+
+# Optional default model for bridge-created turns.
+model = "gpt-5-codex"
+
+# Optional default reasoning effort.
+# Accepted values: none, minimal, low, medium, high, xhigh.
+reasoning_effort = "medium"
+
+# Optional default approval policy.
+# Accepted values: untrusted, on-failure, on-request, never.
+approval_policy = "on-request"
+
+# Optional default sandbox mode.
+# Accepted values: read-only, workspace-write, danger-full-access.
+sandbox = "workspace-write"
+
+# Optional mock inputs used only with --telegram-bridge-mock.
+[[mock_messages]]
+chat_id = -1001234567890
+text = "Summarize the latest git diff."
+
+[[mock_messages]]
+# chat_id omitted -> bridge uses mock fallback chat id.
+text = "What should I test next?"
 ```
+
+Field usage reference:
+
+- `token`: Telegram bot token used by both bridge polling and (by fallback) reply relay.
+- `chat_id`: Convenience single inbound allowlist chat id; merged with `allowed_chat_ids`.
+- `allowed_chat_ids`: Inbound bridge allowlist by chat id.
+- `allowed_user_ids`: Inbound bridge allowlist by sender user id.
+- `reply_chat_id`: Convenience single outbound relay destination.
+- `reply_chat_ids`: Outbound relay destinations for `CODEX_TELEGRAM_REPLY_RELAY=true`.
+- `poll_timeout_seconds`: Long-poll timeout for `getUpdates`.
+- `base_url`: Telegram API endpoint override for bridge and relay fallback.
+- `auto_approve_commands`: Bridge runtime policy for command approvals.
+- `auto_approve_file_changes`: Bridge runtime policy for file change approvals.
+- `codex.cwd`: Default cwd override for bridge-created turns.
+- `codex.model`: Default model override for bridge-created turns.
+- `codex.reasoning_effort`: Default reasoning effort override for bridge-created turns.
+- `codex.approval_policy`: Default approval policy override for bridge-created turns.
+- `codex.sandbox`: Default sandbox override for bridge-created turns.
+- `mock_messages`: Optional mock message queue consumed only in `--telegram-bridge-mock` mode.
+- `mock_messages.chat_id`: Optional chat id for that mock message.
+- `mock_messages.text`: Required message text for that mock message.
 
 Environment overrides:
 
@@ -151,6 +219,7 @@ text = "What should I test next?"
 - `/effort <none|minimal|low|medium|high|xhigh>` sets a chat-scoped reasoning effort override.
 - `/effort` shows the current effective reasoning effort for the chat.
 - `/effort reset` clears the chat-scoped reasoning effort override.
+- `/interrupt` (aliases: `/stop`, `/cancel`) interrupts the currently running turn for the chat.
 - `/status` shows bridge liveness, current mapped thread id, and effective CWD/model/reasoning effort for the chat (including resolved server defaults). If the chat has no mapped thread yet, `/status` creates one so a thread id is always returned.
 - Messages are accepted when either the chat ID is allowlisted or the sender user ID is allowlisted.
 - Messages from unauthorized sources (chat and user both not allowlisted) are ignored.
