@@ -28,6 +28,8 @@ use codex_app_server_protocol::ModelListResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SkillApprovalDecision;
+use codex_app_server_protocol::SkillRequestApprovalResponse;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
@@ -284,6 +286,15 @@ impl AppServerClient {
                     FileChangeApprovalDecision::Decline
                 };
                 let response = FileChangeRequestApprovalResponse { decision };
+                self.send_response(request_id, response)
+            }
+            Ok(ServerRequest::SkillRequestApproval { request_id, .. }) => {
+                let decision = if approvals.auto_approve_commands {
+                    SkillApprovalDecision::Approve
+                } else {
+                    SkillApprovalDecision::Decline
+                };
+                let response = SkillRequestApprovalResponse { decision };
                 self.send_response(request_id, response)
             }
             Ok(ServerRequest::ToolRequestUserInput { request_id, params }) => {

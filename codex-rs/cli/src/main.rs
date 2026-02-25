@@ -537,7 +537,7 @@ async fn run_debug_app_server_command(cmd: DebugAppServerCommand) -> anyhow::Res
 
 async fn run_app_server_command(
     app_server_cli: AppServerCommand,
-    codex_linux_sandbox_exe: Option<PathBuf>,
+    arg0_paths: Arg0DispatchPaths,
     cli_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
     let AppServerCommand {
@@ -556,7 +556,7 @@ async fn run_app_server_command(
         None => {
             if !telegram_bridge {
                 codex_app_server::run_main_with_transport(
-                    codex_linux_sandbox_exe,
+                    arg0_paths.clone(),
                     cli_config_overrides,
                     codex_core::config_loader::LoaderOverrides::default(),
                     analytics_default_enabled,
@@ -590,7 +590,7 @@ async fn run_app_server_command(
             };
 
             let mut app_server_task = tokio::spawn(codex_app_server::run_main_with_transport(
-                codex_linux_sandbox_exe,
+                arg0_paths,
                 cli_config_overrides,
                 codex_core::config_loader::LoaderOverrides::default(),
                 analytics_default_enabled,
@@ -754,12 +754,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             mcp_cli.run().await?;
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
-            run_app_server_command(
-                app_server_cli,
-                arg0_paths.codex_linux_sandbox_exe.clone(),
-                root_config_overrides,
-            )
-            .await?;
+            run_app_server_command(app_server_cli, arg0_paths.clone(), root_config_overrides)
+                .await?;
         }
         #[cfg(target_os = "macos")]
         Some(Subcommand::App(app_cli)) => {
