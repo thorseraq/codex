@@ -35,6 +35,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ToolRequestUserInputAnswer;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
+use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
 use serde::Deserialize;
@@ -123,6 +124,24 @@ impl AppServerClient {
         };
         let _response: ThreadResumeResponse = self.send_request("thread/resume", params)?;
         Ok(())
+    }
+
+    pub fn request_turn_interrupt(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {
+        let request_id = RequestId::Integer(self.next_request_id);
+        self.next_request_id += 1;
+
+        let params = TurnInterruptParams {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+        };
+        let request = JSONRPCMessage::Request(JSONRPCRequest {
+            id: request_id,
+            method: "turn/interrupt".to_string(),
+            params: Some(
+                serde_json::to_value(params).context("serialize `turn/interrupt` params")?,
+            ),
+        });
+        self.write_jsonrpc_message(request)
     }
 
     pub(crate) fn start_turn_with_overrides(
