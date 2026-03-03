@@ -35,6 +35,7 @@ pub struct BridgeRuntimeConfig {
     pub thread: ThreadOverrides,
     pub auto_approve_commands: bool,
     pub auto_approve_file_changes: bool,
+    pub stream_responses: bool,
 }
 
 impl BridgeRuntimeConfig {
@@ -74,6 +75,22 @@ pub(crate) struct ApprovalPolicy {
 
 pub trait OutboundSender {
     fn send_text(&mut self, session_id: &str, text: &str) -> Result<()>;
+
+    fn supports_stream_preview(&self) -> bool {
+        false
+    }
+
+    fn begin_stream(&mut self, _session_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn send_stream_preview(&mut self, session_id: &str, text: &str) -> Result<()> {
+        self.send_text(session_id, text)
+    }
+
+    fn complete_stream(&mut self, _session_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub trait BridgeStateStore {

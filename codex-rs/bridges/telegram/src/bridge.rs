@@ -329,6 +329,14 @@ fn is_authorized_source(config: &BridgeConfig, chat_id: i64, sender_user_id: Opt
     sender_user_id.is_some_and(|user_id| config.allowed_user_ids.contains(&user_id))
 }
 
+fn session_id_for_telegram_chat(chat_id: i64, message_thread_id: Option<i64>) -> String {
+    if let Some(message_thread_id) = message_thread_id.filter(|thread_id| *thread_id > 0) {
+        return format!("{chat_id}:{message_thread_id}");
+    }
+
+    chat_id.to_string()
+}
+
 fn command_args<'a>(text: &'a str, command: &str) -> Option<&'a str> {
     let trimmed = text.trim();
     let first_token = trimmed.split_whitespace().next()?;
@@ -439,6 +447,7 @@ fn run_live_bridge(
             };
 
             let chat_id = message.chat.id;
+            let message_thread_id = message.message_thread_id.filter(|thread_id| *thread_id > 0);
             let sender_user_id = message.from.map(|user| user.id);
             if !is_authorized_source(config, chat_id, sender_user_id) {
                 warn!(
@@ -449,20 +458,24 @@ fn run_live_bridge(
                 continue;
             }
 
-            let session_id = chat_id.to_string();
+            let session_id = session_id_for_telegram_chat(chat_id, message_thread_id);
 
             if is_interrupt_command(&text) {
                 let Some(thread_id) = state.thread_by_chat_id.get(&session_id).cloned() else {
                     let _ignored = telegram.send_message(
                         chat_id,
+                        message_thread_id,
                         "No active conversation for this chat. Send a prompt first.",
                     );
                     continue;
                 };
 
                 let Some(turn_id) = active_turn_by_session.get(&session_id).cloned() else {
-                    let _ignored = telegram
-                        .send_message(chat_id, "No turn is currently running to interrupt.");
+                    let _ignored = telegram.send_message(
+                        chat_id,
+                        message_thread_id,
+                        "No turn is currently running to interrupt.",
+                    );
                     continue;
                 };
 
@@ -477,7 +490,11 @@ fn run_live_bridge(
                             error = %err,
                             "failed to connect app-server for interrupt request"
                         );
-                        let _ignored = telegram.send_message(chat_id, &format!("Error: {err}"));
+                        let _ignored = telegram.send_message(
+                            chat_id,
+                            message_thread_id,
+                            &format!("Error: {err}"),
+                        );
                         continue;
                     }
                 };
@@ -488,7 +505,8 @@ fn run_live_bridge(
                         error = %err,
                         "failed to initialize app-server for interrupt request"
                     );
-                    let _ignored = telegram.send_message(chat_id, &format!("Error: {err}"));
+                    let _ignored =
+                        telegram.send_message(chat_id, message_thread_id, &format!("Error: {err}"));
                     continue;
                 }
 
@@ -500,12 +518,16 @@ fn run_live_bridge(
                         turn_id = %turn_id,
                         "failed to send turn interrupt request"
                     );
-                    let _ignored = telegram.send_message(chat_id, &format!("Error: {err}"));
+                    let _ignored =
+                        telegram.send_message(chat_id, message_thread_id, &format!("Error: {err}"));
                     continue;
                 }
 
-                let _ignored = telegram
-                    .send_message(chat_id, &format!("Interrupt requested for turn {turn_id}."));
+                let _ignored = telegram.send_message(
+                    chat_id,
+                    message_thread_id,
+                    &format!("Interrupt requested for turn {turn_id}."),
+                );
                 continue;
             }
 
@@ -525,7 +547,11 @@ fn run_live_bridge(
                             error = %err,
                             "failed to create session worker"
                         );
-                        let _ignored = telegram.send_message(chat_id, &format!("Error: {err}"));
+                        let _ignored = telegram.send_message(
+                            chat_id,
+                            message_thread_id,
+                            &format!("Error: {err}"),
+                        );
                         continue;
                     }
                 }
@@ -561,6 +587,7 @@ fn run_live_bridge(
                             );
                             let _ignored = telegram.send_message(
                                 chat_id,
+                                message_thread_id,
                                 "Error: session worker unavailable. Please retry.",
                             );
                         }
@@ -571,7 +598,11 @@ fn run_live_bridge(
                             error = %err,
                             "failed to restart session worker"
                         );
-                        let _ignored = telegram.send_message(chat_id, &format!("Error: {err}"));
+                        let _ignored = telegram.send_message(
+                            chat_id,
+                            message_thread_id,
+                            &format!("Error: {err}"),
+                        );
                     }
                 }
             }
@@ -611,8 +642,10 @@ mod tests {
     use super::command_args;
     use super::is_authorized_source;
     use super::is_interrupt_command;
+    use super::session_id_for_telegram_chat;
     use crate::types::BridgeConfig;
     use codex_bridge_core::BridgeRuntimeConfig;
+    use pretty_assertions::assert_eq;
     use std::collections::HashSet;
 
     fn test_config() -> BridgeConfig {
@@ -666,5 +699,19 @@ mod tests {
         assert!(is_interrupt_command("/stop"));
         assert!(is_interrupt_command("/cancel"));
         assert!(!is_interrupt_command("/status"));
+    }
+
+    #[test]
+    fn session_id_for_telegram_chat_without_thread_uses_chat_only() {
+        assert_eq!(session_id_for_telegram_chat(-100123, None), "-100123");
+        assert_eq!(session_id_for_telegram_chat(-100123, Some(0)), "-100123");
+    }
+
+    #[test]
+    fn session_id_for_telegram_chat_with_thread_includes_suffix() {
+        assert_eq!(
+            session_id_for_telegram_chat(-100123, Some(42)),
+            "-100123:42"
+        );
     }
 }

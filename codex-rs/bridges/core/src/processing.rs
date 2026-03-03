@@ -10,6 +10,9 @@ use codex_app_server_protocol::Model;
 use std::path::Path;
 use tracing::warn;
 
+const STREAM_DELTA_FLUSH_CHARS: usize = 240;
+const STREAM_DELTA_NEWLINE_FLUSH_CHARS: usize = 80;
+
 fn command_args<'a>(text: &'a str, command: &str) -> Option<&'a str> {
     let trimmed = text.trim();
     let first_token = trimmed.split_whitespace().next()?;
@@ -111,6 +114,35 @@ fn is_stale_thread_error(err: &anyhow::Error) -> bool {
         let message = cause.to_string();
         message.contains("thread not found") || message.contains("no rollout found for thread id")
     })
+}
+
+#[derive(Debug, Default)]
+struct StreamDeltaBuffer {
+    text: String,
+    char_count: usize,
+}
+
+impl StreamDeltaBuffer {
+    fn push(&mut self, delta: &str) {
+        self.text.push_str(delta);
+        self.char_count += delta.chars().count();
+    }
+
+    fn should_flush_after_delta(&self, delta: &str) -> bool {
+        if self.char_count >= STREAM_DELTA_FLUSH_CHARS {
+            return true;
+        }
+
+        delta.contains('\n') && self.char_count >= STREAM_DELTA_NEWLINE_FLUSH_CHARS
+    }
+
+    fn take_chunk(&mut self) -> Option<String> {
+        if self.text.is_empty() {
+            return None;
+        }
+        self.char_count = 0;
+        Some(std::mem::take(&mut self.text))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,6 +450,65 @@ pub fn complete_started_turn(
     turn_id: &str,
     config: &BridgeRuntimeConfig,
 ) -> Result<()> {
+    if config.stream_responses {
+        if outbound.supports_stream_preview() {
+            outbound.begin_stream(session_id)?;
+            let mut stream_delta_buffer = StreamDeltaBuffer::default();
+            let run_result = app_server.run_turn_until_complete_with_agent_message_deltas(
+                thread_id,
+                turn_id,
+                config.approval_policy(),
+                |delta| {
+                    stream_delta_buffer.push(delta);
+                    if stream_delta_buffer.should_flush_after_delta(delta)
+                        && let Some(chunk) = stream_delta_buffer.take_chunk()
+                    {
+                        outbound.send_stream_preview(session_id, &chunk)?;
+                    }
+                    Ok(())
+                },
+            );
+            if let Some(chunk) = stream_delta_buffer.take_chunk() {
+                outbound.send_stream_preview(session_id, &chunk)?;
+            }
+            outbound.complete_stream(session_id)?;
+            let (response_text, _saw_agent_deltas) = run_result?;
+            outbound.send_text(session_id, &response_text)?;
+            return Ok(());
+        }
+
+        let mut stream_delta_buffer = StreamDeltaBuffer::default();
+        let mut pushed_stream_chunk = false;
+        let mut streamed_output = String::new();
+        let (response_text, _saw_agent_deltas) = app_server
+            .run_turn_until_complete_with_agent_message_deltas(
+                thread_id,
+                turn_id,
+                config.approval_policy(),
+                |delta| {
+                    streamed_output.push_str(delta);
+                    stream_delta_buffer.push(delta);
+                    if stream_delta_buffer.should_flush_after_delta(delta)
+                        && let Some(chunk) = stream_delta_buffer.take_chunk()
+                    {
+                        outbound.send_text(session_id, &chunk)?;
+                        pushed_stream_chunk = true;
+                    }
+                    Ok(())
+                },
+            )?;
+
+        if let Some(chunk) = stream_delta_buffer.take_chunk() {
+            outbound.send_text(session_id, &chunk)?;
+            pushed_stream_chunk = true;
+        }
+
+        if !pushed_stream_chunk || streamed_output.trim() != response_text.trim() {
+            outbound.send_text(session_id, &response_text)?;
+        }
+        return Ok(());
+    }
+
     let response_text =
         app_server.run_turn_until_complete(thread_id, turn_id, config.approval_policy())?;
     outbound.send_text(session_id, &response_text)?;
@@ -449,6 +540,9 @@ pub fn process_message(
 
 #[cfg(test)]
 mod tests {
+    use super::STREAM_DELTA_FLUSH_CHARS;
+    use super::STREAM_DELTA_NEWLINE_FLUSH_CHARS;
+    use super::StreamDeltaBuffer;
     use super::command_args;
     use super::is_stale_thread_error;
     use super::parse_reasoning_effort;
@@ -514,5 +608,36 @@ mod tests {
     #[test]
     fn parse_reasoning_effort_rejects_unknown_value() {
         assert_eq!(parse_reasoning_effort("ultra"), None);
+    }
+
+    #[test]
+    fn stream_delta_buffer_flushes_on_char_threshold() {
+        let mut buffer = StreamDeltaBuffer::default();
+        let delta = "x".repeat(STREAM_DELTA_FLUSH_CHARS);
+        buffer.push(&delta);
+
+        assert!(buffer.should_flush_after_delta(&delta));
+        assert_eq!(buffer.take_chunk(), Some(delta));
+        assert_eq!(buffer.take_chunk(), None);
+    }
+
+    #[test]
+    fn stream_delta_buffer_flushes_on_newline_threshold() {
+        let mut buffer = StreamDeltaBuffer::default();
+        let delta = format!("{}\n", "a".repeat(STREAM_DELTA_NEWLINE_FLUSH_CHARS));
+        buffer.push(&delta);
+
+        assert!(buffer.should_flush_after_delta(&delta));
+        assert_eq!(buffer.take_chunk(), Some(delta));
+    }
+
+    #[test]
+    fn stream_delta_buffer_keeps_small_non_newline_chunks() {
+        let mut buffer = StreamDeltaBuffer::default();
+        let delta = "tiny";
+        buffer.push(delta);
+
+        assert!(!buffer.should_flush_after_delta(delta));
+        assert_eq!(buffer.take_chunk(), Some(delta.to_string()));
     }
 }

@@ -276,6 +276,7 @@ fn send_message_chunk(
     let endpoint = format!("{}/bot{}/sendMessage", runtime.api_base_url, runtime.token);
     let request = TelegramSendMessageRequest {
         chat_id,
+        message_thread_id: None,
         text: text.to_string(),
     };
 
