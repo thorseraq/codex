@@ -193,9 +193,30 @@ impl AppServerClient {
         turn_id: &str,
         approvals: ApprovalPolicy,
     ) -> Result<String> {
+        let (response_text, _saw_agent_deltas) = self
+            .run_turn_until_complete_with_agent_message_deltas(
+                thread_id,
+                turn_id,
+                approvals,
+                |_delta| Ok(()),
+            )?;
+        Ok(response_text)
+    }
+
+    pub(crate) fn run_turn_until_complete_with_agent_message_deltas<F>(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        approvals: ApprovalPolicy,
+        mut on_agent_delta: F,
+    ) -> Result<(String, bool)>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
         let mut streamed_text = String::new();
         let mut completed_agent_messages = Vec::new();
         let mut last_error: Option<String> = None;
+        let mut saw_agent_deltas = false;
 
         loop {
             let incoming = self.read_jsonrpc_message()?;
@@ -213,6 +234,10 @@ impl AppServerClient {
                             if delta.thread_id == thread_id && delta.turn_id == turn_id =>
                         {
                             streamed_text.push_str(&delta.delta);
+                            if !delta.delta.is_empty() {
+                                on_agent_delta(&delta.delta)?;
+                                saw_agent_deltas = true;
+                            }
                         }
                         ServerNotification::ItemCompleted(item_completed)
                             if item_completed.thread_id == thread_id
@@ -248,19 +273,22 @@ impl AppServerClient {
         if !completed_agent_messages.is_empty() {
             let merged = completed_agent_messages.join("\n\n");
             if !merged.trim().is_empty() {
-                return Ok(merged);
+                return Ok((merged, saw_agent_deltas));
             }
         }
 
         if !streamed_text.trim().is_empty() {
-            return Ok(streamed_text);
+            return Ok((streamed_text, saw_agent_deltas));
         }
 
         if let Some(error) = last_error {
-            return Ok(format!("Turn failed: {error}"));
+            return Ok((format!("Turn failed: {error}"), saw_agent_deltas));
         }
 
-        Ok("Turn completed with no assistant text output.".to_string())
+        Ok((
+            "Turn completed with no assistant text output.".to_string(),
+            saw_agent_deltas,
+        ))
     }
 
     fn handle_server_request(

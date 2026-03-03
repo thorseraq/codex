@@ -79,6 +79,10 @@ auto_approve_commands = false
 # Auto-approve file-change approvals for bridge-initiated turns.
 auto_approve_file_changes = false
 
+# Stream assistant deltas via Telegram Bot API `sendMessageDraft` while a turn is running.
+# When false, bridge only sends one final response message.
+stream_responses = false
+
 [codex]
 # Default working directory used for new turns from Telegram bridge.
 cwd = "/path/to/workspace"
@@ -120,6 +124,7 @@ Field usage reference:
 - `base_url`: Telegram API endpoint override for bridge and relay fallback.
 - `auto_approve_commands`: Bridge runtime policy for command approvals.
 - `auto_approve_file_changes`: Bridge runtime policy for file change approvals.
+- `stream_responses`: Bridge runtime policy for `sendMessageDraft` streaming previews (with automatic fallback to final-only response when drafts are unavailable).
 - `codex.cwd`: Default cwd override for bridge-created turns.
 - `codex.model`: Default model override for bridge-created turns.
 - `codex.reasoning_effort`: Default reasoning effort override for bridge-created turns.
@@ -139,6 +144,7 @@ Environment overrides:
 - `CODEX_TELEGRAM_BASE_URL`
 - `CODEX_TELEGRAM_AUTO_APPROVE_COMMANDS` (`true/false`)
 - `CODEX_TELEGRAM_AUTO_APPROVE_FILE_CHANGES` (`true/false`)
+- `CODEX_TELEGRAM_STREAM_RESPONSES` (`true/false`)
 
 ## Reply Relay for Every Interface
 
@@ -226,6 +232,7 @@ text = "What should I test next?"
 - Different chat groups are processed in parallel worker sessions, while preserving in-order processing per chat group.
 - If a stored chat-to-thread mapping points to a missing thread, the bridge creates a new thread mapping automatically.
 - For normal prompts, the bridge sends an immediate processing-state message (cwd/model/effort) before the final response.
+- When `stream_responses=true`, the bridge sends incremental preview updates using Telegram `sendMessageDraft` (stable `draft_id` per turn) and always sends one final persisted message at turn completion.
 - Long responses are chunked to satisfy Telegram message limits.
 - Legacy app-server approval callbacks are rejected; v2 approvals are auto-accepted/declined based on config.
 

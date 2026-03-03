@@ -40,6 +40,9 @@ impl BridgeConfig {
             bool_env_override("CODEX_TELEGRAM_AUTO_APPROVE_FILE_CHANGES")?
                 .or(file_config.auto_approve_file_changes)
                 .unwrap_or(false);
+        let stream_responses = bool_env_override("CODEX_TELEGRAM_STREAM_RESPONSES")?
+            .or(file_config.stream_responses)
+            .unwrap_or(false);
 
         let thread = file_config
             .codex
@@ -56,6 +59,7 @@ impl BridgeConfig {
             thread,
             auto_approve_commands,
             auto_approve_file_changes,
+            stream_responses,
         };
 
         let mock_chat_id = args
