@@ -51,6 +51,35 @@ if let Some(provider) = OtelProvider::from(&settings)? {
 
 ## SessionTelemetry (events)
 
+## Langfuse Cloud (US/EU) with Codex `config.toml`
+
+Langfuse Cloud accepts OTLP over HTTP (`binary` protobuf or `json`) and does
+not accept OTLP gRPC. For Codex, configure `otel.trace_exporter` as
+`otlp-http`, and use the signal-specific traces endpoint:
+
+`https://cloud.langfuse.com/api/public/otel/v1/traces`
+
+Set `Authorization` as Basic auth where the token is
+`base64(<LANGFUSE_PUBLIC_KEY>:<LANGFUSE_SECRET_KEY>)`.
+
+```toml
+[analytics]
+enabled = true
+
+[otel]
+environment = "prod"
+# Keep non-trace signals disabled unless you explicitly need them.
+exporter = "none"
+metrics_exporter = "none"
+
+[otel.trace_exporter.otlp-http]
+endpoint = "https://us.cloud.langfuse.com/api/public/otel/v1/traces"
+protocol = "binary"
+headers = { Authorization = "Basic <base64(public_key:secret_key)>" }
+```
+
+## SessionTelemetry (events)
+
 `SessionTelemetry` adds consistent metadata to tracing events and helps record
 Codex-specific session events. Rich session/business events should go through
 `SessionTelemetry`; subsystem-owned audit events can stay with the owning subsystem.
