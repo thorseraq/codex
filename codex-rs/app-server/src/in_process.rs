@@ -406,6 +406,7 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
                 cloud_requirements: args.cloud_requirements,
                 feedback: args.feedback,
                 log_db: None,
+                telegram_reply_relay: None,
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
                 enable_codex_api_key_env: args.enable_codex_api_key_env,

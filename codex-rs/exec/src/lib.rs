@@ -693,7 +693,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     params: TurnStartParams {
                         thread_id: primary_thread_id_for_span.clone(),
                         input: items.into_iter().map(Into::into).collect(),
-                        cwd: Some(default_cwd),
+                        cwd: Some(default_cwd.clone()),
                         approval_policy: Some(default_approval_policy.into()),
                         sandbox_policy: Some(default_sandbox_policy.clone().into()),
                         model: None,

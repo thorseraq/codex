@@ -2477,7 +2477,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "toml 0.9.12+spec-1.1.0",
+ "toml 0.9.11+spec-1.1.0",
  "tracing",
 ]
 

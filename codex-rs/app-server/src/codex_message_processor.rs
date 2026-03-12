@@ -764,7 +764,7 @@ impl CodexMessageProcessor {
                     app_server_client_name.clone(),
                     request_source,
                 )
-                    .await;
+                .await;
             }
             ClientRequest::PluginUninstall { request_id, params } => {
                 self.plugin_uninstall(to_connection_request_id(request_id), params)
@@ -5865,7 +5865,7 @@ impl CodexMessageProcessor {
 
         match turn_id {
             Ok(turn_id) => {
-                let thread_state = self.thread_state_manager.thread_state(thread_id);
+                let thread_state = self.thread_state_manager.thread_state(thread_id).await;
                 let mut thread_state = thread_state.lock().await;
                 thread_state.set_reply_relay_cwd(relay_cwd);
                 if let Some(prompt) = relay_prompt {

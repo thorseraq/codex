@@ -13,6 +13,7 @@ use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+use codex_app_server_protocol::GrantedPermissionProfile;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
@@ -22,14 +23,16 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::McpServerElicitationAction;
+use codex_app_server_protocol::McpServerElicitationRequestResponse;
 use codex_app_server_protocol::Model;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::PermissionGrantScope;
+use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
-use codex_app_server_protocol::SkillApprovalDecision;
-use codex_app_server_protocol::SkillRequestApprovalResponse;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
@@ -142,6 +145,7 @@ impl AppServerClient {
             params: Some(
                 serde_json::to_value(params).context("serialize `turn/interrupt` params")?,
             ),
+            trace: None,
         });
         self.write_jsonrpc_message(request)
     }
@@ -316,13 +320,11 @@ impl AppServerClient {
                 let response = FileChangeRequestApprovalResponse { decision };
                 self.send_response(request_id, response)
             }
-            Ok(ServerRequest::SkillRequestApproval { request_id, .. }) => {
-                let decision = if approvals.auto_approve_commands {
-                    SkillApprovalDecision::Approve
-                } else {
-                    SkillApprovalDecision::Decline
+            Ok(ServerRequest::PermissionsRequestApproval { request_id, .. }) => {
+                let response = PermissionsRequestApprovalResponse {
+                    permissions: GrantedPermissionProfile::default(),
+                    scope: PermissionGrantScope::Turn,
                 };
-                let response = SkillRequestApprovalResponse { decision };
                 self.send_response(request_id, response)
             }
             Ok(ServerRequest::ToolRequestUserInput { request_id, params }) => {
@@ -342,6 +344,14 @@ impl AppServerClient {
                     })
                     .collect::<HashMap<_, _>>();
                 let response = ToolRequestUserInputResponse { answers };
+                self.send_response(request_id, response)
+            }
+            Ok(ServerRequest::McpServerElicitationRequest { request_id, .. }) => {
+                let response = McpServerElicitationRequestResponse {
+                    action: McpServerElicitationAction::Cancel,
+                    content: None,
+                    meta: None,
+                };
                 self.send_response(request_id, response)
             }
             Ok(ServerRequest::DynamicToolCall { request_id, .. }) => {
@@ -408,6 +418,7 @@ impl AppServerClient {
             id: request_id.clone(),
             method: method.to_string(),
             params: Some(serde_json::to_value(params).context("serialize request params")?),
+            trace: None,
         });
         self.write_jsonrpc_message(request)?;
 
