@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub(crate) const DEFAULT_TELEGRAM_API_BASE_URL: &str = "https://api.telegram.org";
 pub(crate) const DEFAULT_POLL_TIMEOUT_SECONDS: u32 = 30;
@@ -76,6 +77,7 @@ pub(crate) struct TelegramApiClient {
     pub(crate) token: String,
     pub(crate) api_base_url: String,
     pub(crate) poll_timeout_seconds: u32,
+    pub(crate) request_timeout: Duration,
     pub(crate) next_draft_id: i64,
     pub(crate) stream_draft_by_session: HashMap<String, TelegramDraftStreamState>,
 }

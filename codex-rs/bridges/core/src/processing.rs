@@ -7,11 +7,15 @@ use crate::types::OutboundSender;
 use crate::types::ThreadOverrides;
 use anyhow::Result;
 use codex_app_server_protocol::Model;
+use codex_app_server_protocol::Thread;
 use std::path::Path;
 use tracing::warn;
 
 const STREAM_DELTA_FLUSH_CHARS: usize = 240;
 const STREAM_DELTA_NEWLINE_FLUSH_CHARS: usize = 80;
+const DEFAULT_THREAD_LIST_LIMIT: u32 = 10;
+const MAX_THREAD_LIST_LIMIT: u32 = 20;
+const THREAD_LIST_TITLE_LIMIT: usize = 72;
 
 fn command_args<'a>(text: &'a str, command: &str) -> Option<&'a str> {
     let trimmed = text.trim();
@@ -33,6 +37,51 @@ fn parse_reasoning_effort(raw: &str) -> Option<String> {
         "xhigh" | "x-high" | "extra-high" | "extra_high" => Some("xhigh".to_string()),
         _ => None,
     }
+}
+
+fn parse_thread_list_limit(args: &str) -> Result<u32, &'static str> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_THREAD_LIST_LIMIT);
+    }
+
+    let parsed = trimmed
+        .parse::<u32>()
+        .map_err(|_| "Invalid list limit. Use /list or /list <1-20>.")?;
+    if parsed == 0 {
+        return Err("Invalid list limit. Use /list or /list <1-20>.");
+    }
+
+    Ok(parsed.min(MAX_THREAD_LIST_LIMIT))
+}
+
+fn normalize_inline_text(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_text(raw: &str, max_chars: usize) -> String {
+    let total_chars = raw.chars().count();
+    if total_chars <= max_chars {
+        return raw.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    let truncated = raw.chars().take(keep).collect::<String>();
+    format!("{truncated}…")
+}
+
+fn format_thread_label(thread: &Thread) -> String {
+    let title = thread
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(thread.preview.as_str());
+    let normalized = normalize_inline_text(title);
+    if normalized.is_empty() {
+        return "(untitled thread)".to_string();
+    }
+
+    truncate_text(&normalized, THREAD_LIST_TITLE_LIMIT)
 }
 
 fn resolve_effective_model_effort(
@@ -88,7 +137,7 @@ fn ensure_thread_for_chat(
 ) -> Result<String> {
     if let Some(thread_id) = state.thread_by_chat_id.get(session_id).cloned() {
         match app_server.resume_thread(&thread_id) {
-            Ok(()) => return Ok(thread_id),
+            Ok(_) => return Ok(thread_id),
             Err(err) if is_stale_thread_error(&err) => {
                 warn!(
                     session_id,
@@ -244,6 +293,187 @@ pub fn process_message_until_turn_start(
                 resolved.model, resolved.model_source, resolved.effort, resolved.effort_source
             ),
         )?;
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
+    }
+
+    if let Some(args) = command_args(text, "/fork") {
+        if !args.is_empty() {
+            outbound.send_text(
+                session_id,
+                "Use /fork to branch the current conversation. It does not take arguments.",
+            )?;
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
+        }
+
+        let Some(current_thread_id) = state.thread_by_chat_id.get(session_id).cloned() else {
+            outbound.send_text(
+                session_id,
+                "No active conversation for this chat. Send a prompt first.",
+            )?;
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
+        };
+
+        match app_server.fork_thread(&current_thread_id) {
+            Ok(new_thread_id) => {
+                state
+                    .thread_by_chat_id
+                    .insert(session_id.to_string(), new_thread_id.clone());
+                outbound.send_text(
+                    session_id,
+                    &format!(
+                        "Conversation forked.\nOld thread: {current_thread_id}\nNew thread: {new_thread_id}\nThis chat now continues on the new fork."
+                    ),
+                )?;
+            }
+            Err(err) if is_stale_thread_error(&err) => {
+                state.thread_by_chat_id.remove(session_id);
+                outbound.send_text(
+                    session_id,
+                    "The current mapped thread no longer exists. Send a prompt first to start a new conversation.",
+                )?;
+            }
+            Err(err) => return Err(err),
+        }
+
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
+    }
+
+    if let Some(args) = command_args(text, "/resume") {
+        let mut tokens = args.split_whitespace();
+        let Some(target_thread_id) = tokens.next() else {
+            outbound.send_text(
+                session_id,
+                "Use /resume <thread-id> to bind this chat to an existing conversation.",
+            )?;
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
+        };
+        if tokens.next().is_some() {
+            outbound.send_text(
+                session_id,
+                "Use /resume <thread-id> to bind this chat to an existing conversation.",
+            )?;
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
+        }
+
+        match app_server.resume_thread(target_thread_id) {
+            Ok(response) => {
+                let resumed_thread_id = response.thread.id;
+                state
+                    .thread_by_chat_id
+                    .insert(session_id.to_string(), resumed_thread_id.clone());
+
+                let resumed_cwd = response.cwd.to_string_lossy().into_owned();
+                if resumed_cwd.is_empty() {
+                    state.cwd_by_chat_id.remove(session_id);
+                } else {
+                    state
+                        .cwd_by_chat_id
+                        .insert(session_id.to_string(), resumed_cwd.clone());
+                }
+
+                if response.model.trim().is_empty() {
+                    state.model_by_chat_id.remove(session_id);
+                } else {
+                    state
+                        .model_by_chat_id
+                        .insert(session_id.to_string(), response.model.clone());
+                }
+
+                if let Some(effort) = response.reasoning_effort {
+                    state
+                        .effort_by_chat_id
+                        .insert(session_id.to_string(), effort.to_string());
+                } else {
+                    state.effort_by_chat_id.remove(session_id);
+                }
+
+                let cwd_label = if resumed_cwd.is_empty() {
+                    "(server default)".to_string()
+                } else {
+                    resumed_cwd
+                };
+                let effort_label = response.reasoning_effort.map_or_else(
+                    || "(server default)".to_string(),
+                    |effort| effort.to_string(),
+                );
+                outbound.send_text(
+                    session_id,
+                    &format!(
+                        "Conversation resumed.\nThread: {resumed_thread_id}\nCWD: {cwd_label}\nModel: {}\nReasoning effort: {effort_label}\nThis chat now continues on the selected thread.",
+                        response.model
+                    ),
+                )?;
+            }
+            Err(err) if is_stale_thread_error(&err) => {
+                outbound.send_text(
+                    session_id,
+                    "Thread not found. Use /list to inspect recent conversations in this CWD.",
+                )?;
+            }
+            Err(err) => return Err(err),
+        }
+
+        return Ok(ProcessMessageOutcome::NoTurnStarted);
+    }
+
+    if let Some(args) = command_args(text, "/list") {
+        let limit = match parse_thread_list_limit(args) {
+            Ok(limit) => limit,
+            Err(message) => {
+                outbound.send_text(session_id, message)?;
+                return Ok(ProcessMessageOutcome::NoTurnStarted);
+            }
+        };
+
+        let cwd_filter = thread_overrides.cwd.as_deref();
+        let threads = app_server.list_threads(limit, cwd_filter)?;
+        let current_thread_id = state.thread_by_chat_id.get(session_id).cloned();
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Current chat thread: {}",
+            current_thread_id.as_deref().unwrap_or("(none)")
+        ));
+        if let Some(cwd) = cwd_filter {
+            lines.push(format!("CWD scope: {cwd} ({cwd_source})"));
+        } else {
+            lines.push("CWD scope: (none; showing all threads)".to_string());
+        }
+        if threads.is_empty() {
+            lines.push(if cwd_filter.is_some() {
+                "No stored threads found for this CWD.".to_string()
+            } else {
+                "No stored threads found.".to_string()
+            });
+            outbound.send_text(session_id, &lines.join("\n"))?;
+            return Ok(ProcessMessageOutcome::NoTurnStarted);
+        }
+
+        if current_thread_id
+            .as_deref()
+            .is_some_and(|current| !threads.iter().any(|thread| thread.id == current))
+        {
+            lines.push("Current chat thread is not in this page.".to_string());
+        }
+
+        lines.push(if cwd_filter.is_some() {
+            format!("Recent threads in this CWD (latest {limit}):")
+        } else {
+            format!("Recent threads (latest {limit}):")
+        });
+        for thread in threads {
+            let marker = if current_thread_id.as_deref() == Some(thread.id.as_str()) {
+                " [current]"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "-{marker} {} | {}",
+                thread.id,
+                format_thread_label(&thread)
+            ));
+        }
+
+        outbound.send_text(session_id, &lines.join("\n"))?;
         return Ok(ProcessMessageOutcome::NoTurnStarted);
     }
 
@@ -540,14 +770,23 @@ pub fn process_message(
 
 #[cfg(test)]
 mod tests {
+    use super::DEFAULT_THREAD_LIST_LIMIT;
+    use super::MAX_THREAD_LIST_LIMIT;
     use super::STREAM_DELTA_FLUSH_CHARS;
     use super::STREAM_DELTA_NEWLINE_FLUSH_CHARS;
     use super::StreamDeltaBuffer;
+    use super::THREAD_LIST_TITLE_LIMIT;
     use super::command_args;
+    use super::format_thread_label;
     use super::is_stale_thread_error;
     use super::parse_reasoning_effort;
+    use super::parse_thread_list_limit;
     use anyhow::anyhow;
+    use codex_app_server_protocol::SessionSource;
+    use codex_app_server_protocol::Thread;
+    use codex_app_server_protocol::ThreadStatus;
     use pretty_assertions::assert_eq;
+    use std::path::PathBuf;
 
     #[test]
     fn stale_thread_error_matches_thread_not_found() {
@@ -608,6 +847,75 @@ mod tests {
     #[test]
     fn parse_reasoning_effort_rejects_unknown_value() {
         assert_eq!(parse_reasoning_effort("ultra"), None);
+    }
+
+    #[test]
+    fn parse_thread_list_limit_defaults_and_clamps() {
+        assert_eq!(
+            parse_thread_list_limit("").expect("default list limit"),
+            DEFAULT_THREAD_LIST_LIMIT
+        );
+        assert_eq!(
+            parse_thread_list_limit("999").expect("clamped list limit"),
+            MAX_THREAD_LIST_LIMIT
+        );
+    }
+
+    #[test]
+    fn parse_thread_list_limit_rejects_invalid_values() {
+        assert!(parse_thread_list_limit("0").is_err());
+        assert!(parse_thread_list_limit("abc").is_err());
+    }
+
+    #[test]
+    fn format_thread_label_prefers_name_and_truncates() {
+        let thread = Thread {
+            id: "thread-1".to_string(),
+            preview: "preview text".to_string(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            status: ThreadStatus::Idle,
+            path: None,
+            cwd: PathBuf::from("/tmp"),
+            cli_version: "test".to_string(),
+            source: SessionSource::AppServer,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: Some("x".repeat(THREAD_LIST_TITLE_LIMIT + 8)),
+            turns: Vec::new(),
+        };
+
+        assert_eq!(
+            format_thread_label(&thread),
+            format!("{}…", "x".repeat(THREAD_LIST_TITLE_LIMIT - 1))
+        );
+    }
+
+    #[test]
+    fn format_thread_label_falls_back_to_preview() {
+        let thread = Thread {
+            id: "thread-1".to_string(),
+            preview: "preview\nwith   spacing".to_string(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            status: ThreadStatus::Idle,
+            path: None,
+            cwd: PathBuf::from("/tmp"),
+            cli_version: "test".to_string(),
+            source: SessionSource::AppServer,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        };
+
+        assert_eq!(format_thread_label(&thread), "preview with spacing");
     }
 
     #[test]

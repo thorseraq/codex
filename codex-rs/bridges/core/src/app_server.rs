@@ -33,9 +33,15 @@ use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadForkParams;
+use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ToolRequestUserInputAnswer;
@@ -122,13 +128,36 @@ impl AppServerClient {
         Ok(response.thread.id)
     }
 
-    pub(crate) fn resume_thread(&mut self, thread_id: &str) -> Result<()> {
+    pub(crate) fn resume_thread(&mut self, thread_id: &str) -> Result<ThreadResumeResponse> {
         let params = ThreadResumeParams {
             thread_id: thread_id.to_string(),
             ..Default::default()
         };
-        let _response: ThreadResumeResponse = self.send_request("thread/resume", params)?;
-        Ok(())
+        self.send_request("thread/resume", params)
+    }
+
+    pub(crate) fn fork_thread(&mut self, thread_id: &str) -> Result<String> {
+        let params = ThreadForkParams {
+            thread_id: thread_id.to_string(),
+            ..Default::default()
+        };
+        let response: ThreadForkResponse = self.send_request("thread/fork", params)?;
+        Ok(response.thread.id)
+    }
+
+    pub(crate) fn list_threads(&mut self, limit: u32, cwd: Option<&str>) -> Result<Vec<Thread>> {
+        let params = ThreadListParams {
+            cursor: None,
+            limit: Some(limit),
+            sort_key: Some(ThreadSortKey::UpdatedAt),
+            model_providers: None,
+            source_kinds: None,
+            archived: Some(false),
+            cwd: cwd.map(str::to_string),
+            search_term: None,
+        };
+        let response: ThreadListResponse = self.send_request("thread/list", params)?;
+        Ok(response.data)
     }
 
     pub fn request_turn_interrupt(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {

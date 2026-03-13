@@ -18,23 +18,51 @@ use tracing::warn;
 
 const DRAFT_ID_START: i64 = 1;
 
+fn build_http_client(timeout: std::time::Duration) -> Result<Client> {
+    Client::builder()
+        .timeout(timeout)
+        .build()
+        .context("create telegram http client")
+}
+
 impl TelegramApiClient {
     pub(crate) fn new(
         token: String,
         api_base_url: String,
         poll_timeout_seconds: u32,
     ) -> Result<Self> {
-        let timeout = std::time::Duration::from_secs(u64::from(poll_timeout_seconds) + 15);
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("create telegram http client")?;
+        let request_timeout = std::time::Duration::from_secs(u64::from(poll_timeout_seconds) + 15);
+        Self::new_with_request_timeout(token, api_base_url, poll_timeout_seconds, request_timeout)
+    }
+
+    pub(crate) fn new_with_request_timeout(
+        token: String,
+        api_base_url: String,
+        poll_timeout_seconds: u32,
+        request_timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let client = build_http_client(request_timeout)?;
 
         Ok(Self {
             client,
             token,
             api_base_url,
             poll_timeout_seconds,
+            request_timeout,
+            next_draft_id: DRAFT_ID_START,
+            stream_draft_by_session: std::collections::HashMap::new(),
+        })
+    }
+
+    pub(crate) fn reconnect(&self) -> Result<Self> {
+        let client = build_http_client(self.request_timeout)?;
+
+        Ok(Self {
+            client,
+            token: self.token.clone(),
+            api_base_url: self.api_base_url.clone(),
+            poll_timeout_seconds: self.poll_timeout_seconds,
+            request_timeout: self.request_timeout,
             next_draft_id: DRAFT_ID_START,
             stream_draft_by_session: std::collections::HashMap::new(),
         })

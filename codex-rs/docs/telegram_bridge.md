@@ -227,12 +227,17 @@ text = "What should I test next?"
 - `/effort reset` clears the chat-scoped reasoning effort override.
 - `/interrupt` (aliases: `/stop`, `/cancel`) interrupts the currently running turn for the chat.
 - `/status` shows bridge liveness, current mapped thread id, and effective CWD/model/reasoning effort for the chat (including resolved server defaults). If the chat has no mapped thread yet, `/status` creates one so a thread id is always returned.
+- `/fork` forks the current mapped thread, rebinds that Telegram chat to the new thread id, and keeps the original thread available in app-server history.
+- `/restart` performs a soft restart of the Telegram bridge runtime: it recreates the Telegram polling client, drops session workers and cached app-server bridge connections, and reloads persisted bridge state. This is meant to approximate restarting `codex app-server --telegram-bridge` without actually respawning the process.
+- `/resume <thread-id>` rebinds the current Telegram chat to an existing thread id and syncs the chat's cwd/model/reasoning-effort view to that resumed thread.
+- `/list [N]` lists recent non-archived threads from app-server history (default 10, max 20), scoped to the chat's current effective CWD when available, and marks the thread currently mapped to that Telegram chat.
 - Messages are accepted when either the chat ID is allowlisted or the sender user ID is allowlisted.
 - Messages from unauthorized sources (chat and user both not allowlisted) are ignored.
 - Different chat groups are processed in parallel worker sessions, while preserving in-order processing per chat group.
 - If a stored chat-to-thread mapping points to a missing thread, the bridge creates a new thread mapping automatically.
 - For normal prompts, the bridge sends an immediate processing-state message (cwd/model/effort) before the final response.
 - When `stream_responses=true`, the bridge sends incremental preview updates using Telegram `sendMessageDraft` (stable `draft_id` per turn) and always sends one final persisted message at turn completion.
+- Transient `getUpdates` transport failures (for example timeout, connection reset, truncated/closed mid-response, Telegram 5xx, or 429) are logged, followed by Telegram HTTP client recreation and retry with backoff instead of terminating the bridge loop.
 - Long responses are chunked to satisfy Telegram message limits.
 - Legacy app-server approval callbacks are rejected; v2 approvals are auto-accepted/declined based on config.
 
